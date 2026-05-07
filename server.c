@@ -34,6 +34,28 @@ int main(void) {
 
         printf("Got a connection from %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
+        char buf[4096];
+        ssize_t n = read(client_fd, buf, sizeof(buf) - 1);
+        if (n <= 0) {
+            close(client_fd);
+            continue;
+        }
+        buf[n] = '\0';
+
+        char method[16];
+        char path[1024];
+        char version[16];
+
+        if (sscanf(buf, "%15s %1023s %15s", method, path, version) != 3) {
+            printf("Malformed request\n");
+            close(client_fd);
+            continue;
+        }
+
+        printf("Method: %s\n", method);
+        printf("Path: %s\n", path);
+        printf("Version: %s\n", version);
+
         close(client_fd);
     }
 
