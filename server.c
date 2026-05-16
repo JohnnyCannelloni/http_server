@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <string.h>
 
 #define PORT 8080
 
@@ -56,6 +57,20 @@ int main(void) {
         printf("Path: %s\n", path);
         printf("Version: %s\n", version);
 
+        const char *body = 
+            "<html><body><h1>Hello, World!</h1></body></html>";
+
+        char response[1024];
+        int response_len = snprintf(response, sizeof(response), 
+            "HTTP/1.0 200 OK\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: %zu\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "%s",
+            strlen(body), body);
+        
+        write(client_fd, response, response_len);
         close(client_fd);
     }
 
