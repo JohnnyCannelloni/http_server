@@ -2,11 +2,14 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <fcntl.h>
 
 #define PORT 8080
+#define WEB_ROOT "./www"
 
 int main(void) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -57,20 +60,48 @@ int main(void) {
         printf("Path: %s\n", path);
         printf("Version: %s\n", version);
 
-        const char *body = 
-            "<html><body><h1>Hello, World!</h1></body></html>";
+        char fullpath[1024];
+        snprintf(fullpath, sizeof(fullpath), "%s%s", WEB_ROOT, path);
 
-        char response[1024];
-        int response_len = snprintf(response, sizeof(response), 
+        int file_fd = open(fullpath, O_RDONLY);
+        if (file_fd < 0) {
+            const char *not_found =
+                "HTTP/1.0 404 Not Found\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 13\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "404 Not Found";
+            write(client_fd, not_found, strlen(not_found));
+            close(client_fd);
+            continue;
+        }
+
+        struct stat st;
+        if (fstat(file_fd, &st) < 0) {
+            perror("fstat");
+            close(file_fd);
+            close(client_fd);
+            continue;
+        }
+
+        char header[512];
+        int header_len = snprintf(header, sizeof(header),
             "HTTP/1.0 200 OK\r\n"
             "Content-Type: text/html\r\n"
-            "Content-Length: %zu\r\n"
+            "Content-Length: %lld\r\n"
             "Connection: close\r\n"
-            "\r\n"
-            "%s",
-            strlen(body), body);
+            "\r\n", 
+            (long long)st.st_size);
         
-        write(client_fd, response, response_len);
+        write(client_fd, header, header_len);
+
+        char chunk[4096];
+        while ((n = read(file_fd, chunk, sizeof(chunk))) > 0) {
+            write(client_fd, chunk, n);
+        }
+
+        close(file_fd);
         close(client_fd);
     }
 
