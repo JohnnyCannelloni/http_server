@@ -4,7 +4,6 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 #include <string.h>
 #include <fcntl.h>
 
@@ -14,6 +13,9 @@
 static int setup_listening_socket(int port) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) { perror("socket"); exit(1); }
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
@@ -59,7 +61,6 @@ static void serve_file(int client_fd, const char *fullpath) {
     int file_fd = open(fullpath, O_RDONLY);
         if (file_fd < 0) {
             send_error(client_fd, 404, "Not Found");
-            close(file_fd);
             return;
         }
 
