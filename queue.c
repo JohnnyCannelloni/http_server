@@ -1,5 +1,4 @@
 #include "queue.h"
-// any other includes you need
 
 void queue_init(struct queue *q) {
     q->head = 0;
