@@ -6,9 +6,11 @@
 #include <netinet/in.h>
 #include <string.h>
 #include <fcntl.h>
+#include "queue.h"
 
 #define PORT 8080
 #define WEB_ROOT "./www"
+#define NUM_WORKERS 8
 
 static int setup_listening_socket(int port) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -27,7 +29,7 @@ static int setup_listening_socket(int port) {
         exit(1);
     }
 
-    if (listen(server_fd, 16) < 0) { perror("listen"); exit(1); } 
+    if (listen(server_fd, 128) < 0) { perror("listen"); exit(1); } 
 
     return server_fd;
 }
@@ -121,9 +123,31 @@ static void handle_client(int client_fd) {
         serve_file(client_fd, fullpath);
 }
 
+static void *worker_main(void *arg) {
+    struct queue *q = (struct queue *)arg;
+
+    for (;;) {
+        int client_fd = queue_dequeue(q);
+        handle_client(client_fd);
+        close(client_fd);
+    }
+
+    return NULL;
+}
+
 int main(void) {
     int server_fd = setup_listening_socket(PORT);
-    printf("Listening on port %d. Press Ctrl-C to quit.\n", PORT);
+
+    struct queue q;
+    queue_init(&q);
+
+    pthread_t workers[NUM_WORKERS];
+    for (int i = 0; i < NUM_WORKERS; i++) {
+        pthread_create(&workers[i], NULL, worker_main, &q);
+    }
+
+    printf("Listening on port %d with %d worker threads. Press Ctrl-C to quit.\n",
+        PORT, NUM_WORKERS);
 
     for (;;) {
         int client_fd = accept(server_fd, NULL, NULL);
@@ -132,10 +156,10 @@ int main(void) {
             continue; 
         }
         
-        handle_client(client_fd);
-        close(client_fd);
+        queue_enqueue(&q, client_fd);
     }
 
+    queue_destroy(&q);
     close(server_fd);
 
     return 0;
