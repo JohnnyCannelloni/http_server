@@ -1,0 +1,16 @@
+{
+  "server": "BareHTTP",
+  "version": "0.3.0",
+  "language": "C",
+  "concurrency": {
+    "model": "thread pool",
+    "workers": 8,
+    "queue_capacity": 64
+  },
+  "protocol": "HTTP/1.0",
+  "build": {
+    "compiler": "gcc",
+    "flags": "-Wall -Wextra -pthread"
+  },
+  "note": "This is a static file. A real status endpoint would compute these values."
+}

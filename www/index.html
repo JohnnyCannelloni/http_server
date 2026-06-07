@@ -1,1 +1,88 @@
-<h1>Home</h1>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BareHTTP</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+<h1>BareHTTP</h1>
+<p class="tagline">A from-scratch multi-threaded HTTP server in C.</p>
+</header>
+
+<main>
+
+<section>
+<p>
+This page is being served by approximately 300 lines of C that I wrote from
+scratch. No frameworks, no libraries beyond the POSIX standard. Just sockets,
+threads, and the C standard library.
+</p>
+</section>
+
+<section>
+<h2>What it is</h2>
+<p>
+BareHTTP is a static HTTP/1.0 file server. It listens on a TCP port,
+accepts incoming connections, parses HTTP requests, and serves files
+from a directory on disk.
+</p>
+<p>
+The point of building it is not to compete with nginx. It is to
+understand what an HTTP server actually does at every layer, from
+the TCP three-way handshake up to the application protocol.
+</p>
+</section>
+
+<section>
+<h2>How it works</h2>
+<p>
+The server uses a fixed pool of pthread workers and a bounded task
+queue with mutex + condition variable synchronization.
+</p>
+<p>
+The main thread does one thing: it calls <code>accept()</code> in a loop
+and submits each accepted client file descriptor to a thread-safe
+queue. Worker threads consume from the queue and handle the actual
+request processing in parallel.
+</p>
+<p>
+This is the textbook producer-consumer pattern. The queue uses two
+condition variables &mdash; one for "not empty" (consumers wait on it)
+and one for "not full" (the producer waits on it). Each operation
+signals the opposite condition after modifying the queue.
+</p>
+<p>
+<a href="/architecture.html">Read the full architecture &rarr;</a>
+</p>
+</section>
+
+<section>
+<h2>Live status</h2>
+<p>
+The server exposes a small JSON endpoint at <code>/api/status.json</code>.
+The data below is fetched from that endpoint by a few lines of JavaScript.
+</p>
+<pre id="status">loading...</pre>
+</section>
+
+<section>
+<h2>Source</h2>
+<p>
+The code is on GitHub. It is structured as three files: <code>server.c</code>,
+<code>queue.c</code>, and <code>queue.h</code>. Build it with
+<code>gcc -Wall -Wextra -pthread server.c queue.c -o server</code>.
+</p>
+</section>
+
+</main>
+
+<footer>
+<p>Written in C. Served by itself.</p>
+</footer>
+
+<script src="/script.js"></script>
+</body>
+</html>

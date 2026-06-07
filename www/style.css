@@ -1,0 +1,95 @@
+/* BareHTTP styling. Inspired by suckless.org -- text first, minimal chrome. */
+
+body {
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    max-width: 720px;
+    margin: 2em auto;
+    padding: 0 1.5em;
+    color: #222;
+    background: #fafafa;
+    line-height: 1.6;
+    font-size: 16px;
+}
+
+header {
+    border-bottom: 1px solid #ddd;
+    margin-bottom: 2em;
+    padding-bottom: 1em;
+}
+
+h1 {
+    font-size: 1.8em;
+    font-weight: normal;
+    margin: 0 0 0.2em 0;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+h2 {
+    font-size: 1.2em;
+    font-weight: bold;
+    margin-top: 2em;
+    margin-bottom: 0.5em;
+    color: #111;
+}
+
+.tagline {
+    color: #666;
+    font-style: italic;
+    margin: 0;
+}
+
+p {
+    margin: 0.8em 0;
+}
+
+a {
+    color: #0066cc;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: #eee;
+    padding: 0.1em 0.3em;
+    border-radius: 2px;
+    font-size: 0.9em;
+}
+
+pre {
+    background: #f0f0f0;
+    border-left: 3px solid #ccc;
+    padding: 1em;
+    overflow-x: auto;
+    font-size: 0.85em;
+    line-height: 1.4;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+pre code {
+    background: none;
+    padding: 0;
+}
+
+section {
+    margin-bottom: 1.5em;
+}
+
+ul {
+    padding-left: 1.5em;
+}
+
+li {
+    margin: 0.3em 0;
+}
+
+footer {
+    border-top: 1px solid #ddd;
+    margin-top: 3em;
+    padding-top: 1em;
+    color: #888;
+    font-size: 0.9em;
+}

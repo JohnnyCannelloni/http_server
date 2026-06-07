@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BareHTTP &mdash; Architecture</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+<h1>Architecture</h1>
+<p class="tagline"><a href="/">&larr; back to home</a></p>
+</header>
+
+<main>
+
+<section>
+<h2>The shape of the program</h2>
+<p>
+One process. Multi-threaded. One main thread that accepts connections
+and dispatches them. Eight worker threads that handle requests in
+parallel. A bounded queue between them holding pending work.
+</p>
+<pre>
+   Internet                Your machine
+   --------                ------------------------------------
+
+   client SYN  -------&gt;  Kernel TCP handshake
+                             |
+                             v
+                         Listen backlog queue (kernel)
+                             |
+                             v
+   +------------------+   accept() returns new fd
+   |   main thread    |   ------------------------------
+   |                  |   queue_enqueue(fd)
+   |   accept loop    |   ------------------------------
+   +------------------+   loop back to accept
+                             |
+                             v
+                         +-----------------+
+                         |  Task queue     |
+                         |  (in memory)    |
+                         |  mutex+condvars |
+                         +-----------------+
+                             |  ^  ^  ^...
+                             v  |  |  |
+                         +----------------------+
+                         |  Worker 1, 2, ..., 8 |
+                         |                      |
+                         |  dequeue -&gt; handle   |
+                         |          -&gt; close    |
+                         +----------------------+
+                             |
+                             v
+   client &lt;-------- TCP response bytes  &lt;----  write() calls
+</pre>
+</section>
+
+<section>
+<h2>The lifecycle of one request</h2>
+
+<p><b>Startup.</b> The server creates a TCP socket, binds it to port 8080,
+calls <code>listen()</code>, initializes the task queue, and spawns eight
+worker threads. Each worker immediately blocks on the queue's "not
+empty" condition variable. The main thread enters the accept loop.</p>
+
+<p><b>Connection arrives.</b> A client sends a TCP SYN. The kernel
+completes the three-way handshake and parks the resulting connection
+in the listen backlog. The main thread, blocked in <code>accept()</code>,
+wakes up and gets a new file descriptor.</p>
+
+<p><b>Dispatch.</b> The main thread submits the file descriptor to the
+queue (locks mutex, writes to ring buffer, signals "not empty",
+unlocks) and immediately loops back to <code>accept()</code>. One of the
+sleeping workers is woken by the signal.</p>
+
+<p><b>Handling.</b> The woken worker dequeues the file descriptor and
+calls <code>handle_client</code>. That function reads the HTTP request,
+parses the request line with <code>sscanf</code>, checks that the
+method is GET, builds the filesystem path, and calls
+<code>serve_file</code>. <code>serve_file</code> opens the file, builds
+the response headers (status line, Content-Type, Content-Length,
+Connection), writes them to the socket, then streams the file body
+in 4 KB chunks.</p>
+
+<p><b>Cleanup.</b> The worker closes the client socket, which triggers
+a TCP FIN. The worker loops back to <code>queue_dequeue</code> and
+either picks up another pending request or goes back to sleep.</p>
+</section>
+
+<section>
+<h2>What's shared between threads</h2>
+<p>
+Almost nothing. The only shared mutable state is the task queue, which
+is protected by its mutex. Every other piece of state &mdash; the request
+buffer, parsed fields, file descriptors during handling &mdash; is per-thread
+stack memory. The helper functions <code>handle_client</code>,
+<code>parse_request_line</code>, <code>send_error</code>, and
+<code>serve_file</code> have no shared state and require no
+synchronization. Multiple instances run concurrently on different threads
+without interfering.
+</p>
+</section>
+
+<section>
+<h2>Why this design</h2>
+<p>
+The alternative concurrency models considered:
+</p>
+<p>
+<b>Thread-per-connection.</b> Create a new thread for every accepted
+connection. Simple but expensive: thread creation involves a kernel
+call, a stack allocation, and scheduler overhead. Under load (10,000
+connections per second) it collapses.
+</p>
+<p>
+<b>Fork-per-connection.</b> Same idea but with processes. Provides
+isolation but is even more expensive than threads. Apache used this in
+its early days; modern servers don't.
+</p>
+<p>
+<b>Thread pool (chosen).</b> Fixed number of workers, created at
+startup. Connections are handed to whichever worker is free. Bounded
+resource usage, no per-request startup cost, simple to reason about.
+The pragmatic choice for moderate load.
+</p>
+<p>
+<b>Event loop with epoll/kqueue.</b> One thread can handle thousands of
+connections by multiplexing I/O. Most efficient, also the most complex.
+This is what nginx and Node.js use. A possible future direction for
+this project.
+</p>
+</section>
+
+<section>
+<h2>Known limitations</h2>
+<p>
+The server is deliberately minimal. It does not yet implement:
+</p>
+<ul>
+<li>HTTP/1.1 keep-alive (each request opens a new TCP connection)</li>
+<li>Chunked transfer encoding</li>
+<li>TLS / HTTPS</li>
+<li>Request size limits beyond the 4 KB initial buffer</li>
+<li>Conditional requests (If-Modified-Since, ETags)</li>
+<li>Compression (gzip, brotli)</li>
+</ul>
+<p>
+All of these are reasonable next steps but were out of scope for the
+initial implementation.
+</p>
+</section>
+
+</main>
+
+<footer>
+<p><a href="/">&larr; back to home</a></p>
+</footer>
+
+</body>
+</html>
