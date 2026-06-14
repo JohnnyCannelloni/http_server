@@ -4,7 +4,6 @@ pthread worker pool with a bounded ring-buffer task queue.
 ## Build and run
 
     gcc -Wall -Wextra -pthread server.c queue.c -o server
-    mkdir -p www && echo "<h1>Hello</h1>" > www/index.html
     ./server
 
 ## Benchmark
