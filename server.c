@@ -8,13 +8,13 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <limits.h>
+#include <getopt.h>
 #include "queue.h"
 
-#define PORT 8080
-#define WEB_ROOT "./www"
-#define NUM_WORKERS 8
+#define MAX_WORKERS 256
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
+static const char *web_root = "./www";
 static char web_root_abs[PATH_MAX]; 
 
 static const struct {
@@ -108,7 +108,7 @@ static void serve_file(int client_fd, const char *fullpath) {
         send_error(client_fd, 403, "Forbidden");
         return;
     }
-    
+
     int file_fd = open(fullpath, O_RDONLY);
         if (file_fd < 0) {
             send_error(client_fd, 404, "Not Found");
@@ -165,12 +165,23 @@ static void handle_client(int client_fd) {
         char fullpath[1024];
         size_t plen = strlen(path);
         if (plen > 0 && path[plen - 1] == '/') {
-            snprintf(fullpath, sizeof(fullpath), "%s%sindex.html", WEB_ROOT, path);
+            snprintf(fullpath, sizeof(fullpath), "%s%sindex.html", web_root, path);
         } else {
-            snprintf(fullpath, sizeof(fullpath), "%s%s", WEB_ROOT, path);
+            snprintf(fullpath, sizeof(fullpath), "%s%s", web_root, path);
         }
 
         serve_file(client_fd, fullpath);
+}
+
+static void usage(const char *prog) {
+    fprintf(stderr,
+        "Usage: %s [options]\n"
+        "Options:\n"
+        "  -p <port>     Port to listen on (default 8080)\n"
+        "  -r <root>     Web root directory (default ./www)\n"
+        "  -t <threads>  Number of worker threads (default 8)\n"
+        "  -h            Show this help and exit\n",
+        prog);
 }
 
 static void *worker_main(void *arg) {
@@ -185,26 +196,57 @@ static void *worker_main(void *arg) {
     return NULL;
 }
 
-int main(void) {
+int main(int argc, char *argv[]) {
+    int port = 8080;
+    int num_workers = 8;
+
+    int opt;
+    while ((opt = getopt(argc, argv, "p:r:t:h")) != -1) {
+        switch (opt) {
+            case 'p':
+                port = atoi(optarg);
+                if (port < 1 || port > 65535) {
+                    fprintf(stderr, "port must be 1-65535, got %d\n", port);
+                    exit(1);
+                }
+                break;
+            case 'r':
+                web_root = optarg;
+                break;
+            case 't':
+                num_workers = atoi(optarg);
+                if (num_workers < 1 || num_workers > MAX_WORKERS) {
+                    fprintf(stderr, "threads must be 1-%d, got %d\n", MAX_WORKERS, num_workers);
+                    exit(1);
+                }
+                break;
+            case 'h':
+                usage(argv[0]);
+                exit(0);
+            default:
+                usage(argv[0]);
+                exit(1);
+        }
+    }
     signal(SIGPIPE, SIG_IGN);
 
-    if (realpath(WEB_ROOT, web_root_abs) == NULL) {
-        perror("realpath(WEB_ROOT)");
+    if (realpath(web_root, web_root_abs) == NULL) {
+        perror("realpath(web_root)");
         exit(1);
     }
 
-    int server_fd = setup_listening_socket(PORT); 
+    int server_fd = setup_listening_socket(port); 
 
     struct queue q;
     queue_init(&q);
 
-    pthread_t workers[NUM_WORKERS];
-    for (int i = 0; i < NUM_WORKERS; i++) {
+    pthread_t workers[MAX_WORKERS];
+    for (int i = 0; i < num_workers; i++) {
         pthread_create(&workers[i], NULL, worker_main, &q);
     }
 
     printf("Listening on port %d with %d worker threads. Press Ctrl-C to quit.\n",
-        PORT, NUM_WORKERS);
+        port, num_workers);
 
     for (;;) {
         int client_fd = accept(server_fd, NULL, NULL);
