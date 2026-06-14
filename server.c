@@ -6,12 +6,16 @@
 #include <netinet/in.h>
 #include <string.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <limits.h>
 #include "queue.h"
 
 #define PORT 8080
 #define WEB_ROOT "./www"
 #define NUM_WORKERS 8
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+
+static char web_root_abs[PATH_MAX]; 
 
 static const struct {
     const char *ext;
@@ -93,6 +97,18 @@ static const char *get_mime_type(const char *filepath) {
 }
 
 static void serve_file(int client_fd, const char *fullpath) {
+    char resolved[PATH_MAX];
+    if (realpath(fullpath, resolved) == NULL) {
+        send_error(client_fd, 404, "Not Found");
+        return;
+    }
+    
+    size_t root_len = strlen(web_root_abs);
+    if (strncmp(resolved, web_root_abs, root_len) != 0) {
+        send_error(client_fd, 403, "Forbidden");
+        return;
+    }
+    
     int file_fd = open(fullpath, O_RDONLY);
         if (file_fd < 0) {
             send_error(client_fd, 404, "Not Found");
@@ -170,7 +186,14 @@ static void *worker_main(void *arg) {
 }
 
 int main(void) {
-    int server_fd = setup_listening_socket(PORT);
+    signal(SIGPIPE, SIG_IGN);
+
+    if (realpath(WEB_ROOT, web_root_abs) == NULL) {
+        perror("realpath(WEB_ROOT)");
+        exit(1);
+    }
+
+    int server_fd = setup_listening_socket(PORT); 
 
     struct queue q;
     queue_init(&q);
