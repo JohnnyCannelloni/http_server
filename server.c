@@ -11,6 +11,24 @@
 #define PORT 8080
 #define WEB_ROOT "./www"
 #define NUM_WORKERS 8
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+
+static const struct {
+    const char *ext;
+    const char *mime;
+} mime_table[] = {
+    { ".html", "text/html" },
+    { ".css",  "text/css" },
+    { ".js",   "application/javascript" },
+    { ".json", "application/json" },
+    { ".txt",  "text/plain" },
+    { ".png",  "image/png" },
+    { ".jpg",  "image/jpeg" },
+    { ".jpeg", "image/jpeg" },
+    { ".gif",  "image/gif" },
+    { ".svg",  "image/svg+xml" },
+    { ".ico",  "image/x-icon" },
+};
 
 static int setup_listening_socket(int port) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -58,6 +76,21 @@ static void send_error(int client_fd, int code, const char *reason) {
 
     write(client_fd, response, response_len);
 }
+static const char *get_mime_type(const char *filepath) {
+    const char *dot = strrchr(filepath, '.');
+
+    if (dot == NULL) {
+        return "application/octet-stream";
+    }
+
+    for (size_t i = 0; i < ARRAY_LEN(mime_table); i++) {
+        if (strcasecmp(dot, mime_table[i].ext) == 0) {
+            return mime_table[i].mime;
+        }
+    }
+
+    return "application/octet-stream";
+}
 
 static void serve_file(int client_fd, const char *fullpath) {
     int file_fd = open(fullpath, O_RDONLY);
@@ -73,14 +106,15 @@ static void serve_file(int client_fd, const char *fullpath) {
             return;
         }
 
+        const char *mime = get_mime_type(fullpath);
         char header[512];
         int header_len = snprintf(header, sizeof(header),
             "HTTP/1.0 200 OK\r\n"
-            "Content-Type: text/html\r\n"
+            "Content-Type: %s\r\n"
             "Content-Length: %lld\r\n"
             "Connection: close\r\n"
             "\r\n",
-            (long long)st.st_size);
+            mime, (long long)st.st_size);
 
         write(client_fd, header, header_len);
 
