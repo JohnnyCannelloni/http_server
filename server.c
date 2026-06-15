@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <limits.h>
 #include <getopt.h>
+#include <errno.h>
 #include "queue.h"
 
 #define MAX_WORKERS 256
@@ -16,6 +17,7 @@
 
 static const char *web_root = "./www";
 static char web_root_abs[PATH_MAX]; 
+static volatile sig_atomic_t stop_flag = 0;
 
 static const struct {
     const char *ext;
@@ -33,6 +35,11 @@ static const struct {
     { ".svg",  "image/svg+xml" },
     { ".ico",  "image/x-icon" },
 };
+
+static void on_signal(int sig) {
+    (void)sig; // silence the warning
+    stop_flag = 1;
+}
 
 static int setup_listening_socket(int port) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -104,7 +111,8 @@ static void serve_file(int client_fd, const char *fullpath) {
     }
     
     size_t root_len = strlen(web_root_abs);
-    if (strncmp(resolved, web_root_abs, root_len) != 0) {
+    if (strncmp(resolved, web_root_abs, root_len) != 0 ||
+       (resolved[root_len] != '/' && resolved[root_len] != '\0')) {
         send_error(client_fd, 403, "Forbidden");
         return;
     }
@@ -189,6 +197,7 @@ static void *worker_main(void *arg) {
 
     for (;;) {
         int client_fd = queue_dequeue(q);
+        if (client_fd == -1) break; //sentinel returned because of interrupt. shutdown.
         handle_client(client_fd);
         close(client_fd);
     }
@@ -228,7 +237,15 @@ int main(int argc, char *argv[]) {
                 exit(1);
         }
     }
+    
     signal(SIGPIPE, SIG_IGN);
+    struct sigaction sa;
+    sa.sa_handler = on_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     if (realpath(web_root, web_root_abs) == NULL) {
         perror("realpath(web_root)");
@@ -248,9 +265,10 @@ int main(int argc, char *argv[]) {
     printf("Listening on port %d with %d worker threads. Press Ctrl-C to quit.\n",
         port, num_workers);
 
-    for (;;) {
+    while (!stop_flag) {
         int client_fd = accept(server_fd, NULL, NULL);
         if (client_fd < 0) { 
+            if (errno == EINTR) continue; // sentinel, trigger shutdown
             perror("accept"); 
             continue; 
         }
@@ -258,8 +276,16 @@ int main(int argc, char *argv[]) {
         queue_enqueue(&q, client_fd);
     }
 
-    queue_destroy(&q);
+    printf("\nShutting down...\n");
     close(server_fd);
+    queue_shutdown(&q);
 
+    for (int i = 0; i < num_workers; i++) {
+        pthread_join(workers[i], NULL);
+    }
+
+    queue_destroy(&q);
+    printf("Server exited cleanley.\n");
+    
     return 0;
 } 
