@@ -10,6 +10,8 @@
 #include <limits.h>
 #include <getopt.h>
 #include <errno.h>
+#include <time.h>
+#include <arpa/inet.h>
 #include "queue.h"
 
 #define MAX_WORKERS 256
@@ -18,6 +20,13 @@
 static const char *web_root = "./www";
 static char web_root_abs[PATH_MAX]; 
 static volatile sig_atomic_t stop_flag = 0;
+
+struct log_entry {
+    char client_ip[INET_ADDRSTRLEN];
+    char request_line[256];
+    int status;
+    long bytes_sent;
+};
 
 static const struct {
     const char *ext;
@@ -71,7 +80,8 @@ static int parse_request_line(const char *buf, char *method, char *path, char *v
     return 0;
 }
 
-static void send_error(int client_fd, int code, const char *reason) {
+static void send_error(int client_fd, int code, const char *reason,
+                        struct log_entry *log) {
     char body[128];
     int body_len = snprintf(body, sizeof(body), "%d %s\n", code, reason);
 
@@ -86,7 +96,10 @@ static void send_error(int client_fd, int code, const char *reason) {
         code, reason, body_len, body);
 
     write(client_fd, response, response_len);
+    log->status = code;
+    log->bytes_sent = body_len;
 }
+
 static const char *get_mime_type(const char *filepath) {
     const char *dot = strrchr(filepath, '.');
 
@@ -103,29 +116,30 @@ static const char *get_mime_type(const char *filepath) {
     return "application/octet-stream";
 }
 
-static void serve_file(int client_fd, const char *fullpath) {
+static void serve_file(int client_fd, const char *fullpath,
+                        struct log_entry *log) {
     char resolved[PATH_MAX];
     if (realpath(fullpath, resolved) == NULL) {
-        send_error(client_fd, 404, "Not Found");
+        send_error(client_fd, 404, "Not Found", log);
         return;
     }
     
     size_t root_len = strlen(web_root_abs);
     if (strncmp(resolved, web_root_abs, root_len) != 0 ||
        (resolved[root_len] != '/' && resolved[root_len] != '\0')) {
-        send_error(client_fd, 403, "Forbidden");
+        send_error(client_fd, 403, "Forbidden", log);
         return;
     }
 
     int file_fd = open(fullpath, O_RDONLY);
         if (file_fd < 0) {
-            send_error(client_fd, 404, "Not Found");
+            send_error(client_fd, 404, "Not Found", log);
             return;
         }
 
         struct stat st;
         if (fstat(file_fd, &st) < 0 || !S_ISREG(st.st_mode)) {
-            send_error(client_fd, 404, "Not Found");
+            send_error(client_fd, 404, "Not Found", log);
             close(file_fd);
             return;
         }
@@ -148,10 +162,12 @@ static void serve_file(int client_fd, const char *fullpath) {
             write(client_fd, chunk, n);
         }
 
+        log->status = 200;
+        log->bytes_sent = st.st_size;
         close(file_fd);
 }
 
-static void handle_client(int client_fd) {
+static void handle_client(int client_fd, struct log_entry *log) {
         char buf[4096];
         ssize_t n = read(client_fd, buf, sizeof(buf) - 1);
         if (n <= 0) {
@@ -161,12 +177,17 @@ static void handle_client(int client_fd) {
 
         char method[16], path[1024], version[16];
         if (parse_request_line(buf, method, path, version) != 0) {
-            send_error(client_fd, 400, "Bad Request");
+            strcpy(log->request_line, "(malformed)");
+            send_error(client_fd, 400, "Bad Request", log);
             return;
         }
+        
+        // updating the log
+        snprintf(log->request_line, sizeof(log->request_line), 
+                "%s %s %s", method, path, version);
 
         if (strcmp(method, "GET") != 0) {
-            send_error(client_fd, 405, "Method Not Allowed");
+            send_error(client_fd, 405, "Method Not Allowed", log);
             return;
         }
 
@@ -178,7 +199,7 @@ static void handle_client(int client_fd) {
             snprintf(fullpath, sizeof(fullpath), "%s%s", web_root, path);
         }
 
-        serve_file(client_fd, fullpath);
+        serve_file(client_fd, fullpath, log);
 }
 
 static void usage(const char *prog) {
@@ -192,14 +213,43 @@ static void usage(const char *prog) {
         prog);
 }
 
+static void write_log(const struct log_entry *log) {
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+
+    char timebuf[32];
+    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm);
+
+    fprintf(stderr, "%s - [%s] \"%s\" %d %ld\n", 
+            log->client_ip, timebuf, log->request_line, log->status, log->bytes_sent);
+}
+
 static void *worker_main(void *arg) {
     struct queue *q = (struct queue *)arg;
 
     for (;;) {
         int client_fd = queue_dequeue(q);
         if (client_fd == -1) break; //sentinel returned because of interrupt. shutdown.
-        handle_client(client_fd);
+
+        struct log_entry log = {0};
+        
+        // resolve the client's IP address from the socket 
+        struct sockaddr_in addr;
+        socklen_t len = sizeof(addr);
+        if (getpeername(client_fd, (struct sockaddr *)&addr, &len) == 0) {
+            inet_ntop(AF_INET, &addr.sin_addr, 
+                      log.client_ip, sizeof(log.client_ip));
+        } else {
+            strcpy(log.client_ip, "?");
+        }
+
+        handle_client(client_fd, &log);
         close(client_fd);
+
+        if (log.status != 0) {
+            write_log(&log);
+        }
     }
 
     return NULL;
@@ -268,7 +318,7 @@ int main(int argc, char *argv[]) {
     while (!stop_flag) {
         int client_fd = accept(server_fd, NULL, NULL);
         if (client_fd < 0) { 
-            if (errno == EINTR) continue; // sentinel, trigger shutdown
+            if (errno == EINTR) continue; // signal interrupted accept
             perror("accept"); 
             continue; 
         }
@@ -285,7 +335,7 @@ int main(int argc, char *argv[]) {
     }
 
     queue_destroy(&q);
-    printf("Server exited cleanley.\n");
+    printf("Server exited cleanly.\n");
     
     return 0;
 } 
