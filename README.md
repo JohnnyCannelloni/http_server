@@ -1,6 +1,6 @@
 # BareHTTP
 
-A multi-threaded HTTP/1.0 file server written in C.
+A multi-threaded HTTP/1.1 file server written in C, with keep-alive support.
 
 I built this to learn how an HTTP server actually works at every layer,
 from the TCP three-way handshake up through request parsing and response
@@ -45,24 +45,48 @@ wait on it) and one for "not full" (the producer waits on it). Each
 operation signals the opposite condition after modifying the queue.
 
 ```
-client ---> accept ---> [task queue] ---> worker ---> handle request
-                              ^               |
-                              |               +---> write response
-                              |               |
-                              +-------- close socket
+client ---> accept ---> [task queue] ---> worker ---> handle request <--+
+                                              |            |             |
+                                              |            +---> write response
+                                              |            |             |
+                                              |      keep-alive? --------+
+                                              |            | no
+                                              +----- close socket
 ```
 
 A request goes through these steps inside a worker:
 
-1. Read up to 4 KB from the client socket.
+1. Read from the client socket into a buffer until the `\r\n\r\n` header
+   terminator arrives (only GET is supported, so there is no request body).
 2. Parse the request line with `sscanf` using bounded-length specifiers.
-3. Reject non-GET methods with 405.
-4. Build the filesystem path. If the URL ends with `/`, append `index.html`.
-5. Resolve the path with `realpath`. Reject paths outside the web root with 403.
-6. Open the file. Reject directories or missing files with 404.
-7. Build HTTP response headers (status line, Content-Type, Content-Length, Connection).
-8. Send headers, then stream the file body in 4 KB chunks.
-9. Close the socket.
+3. Decide keep-alive: HTTP/1.1 stays open unless `Connection: close`; HTTP/1.0
+   closes unless `Connection: keep-alive`.
+4. Reject non-GET methods with 405.
+5. Build the filesystem path. If the URL ends with `/`, append `index.html`.
+6. Resolve the path with `realpath`. Reject paths outside the web root with 403.
+7. Open the file. Reject directories or missing files with 404.
+8. Build HTTP response headers (status line, Content-Type, Content-Length, Connection).
+9. Send headers, then stream the file body in 4 KB chunks.
+10. If keep-alive, loop back for the next request on the same connection;
+    otherwise close the socket.
+
+## Keep-alive
+
+The server speaks HTTP/1.1 and reuses a single TCP connection for multiple
+requests. A worker keeps reading requests off one connection until the client
+sends `Connection: close`, goes idle, or hits the per-connection request cap.
+
+Because the worker pool is a fixed size, an idle kept-alive connection would
+otherwise pin a thread indefinitely. Two hardcoded bounds prevent that:
+
+- **Idle timeout** — each client socket gets a `SO_RCVTIMEO` of 5 seconds, so a
+  silent connection is dropped rather than holding a worker forever.
+- **Request cap** — a single connection serves at most 100 requests before the
+  server closes it, so no one client can monopolize a worker.
+
+Partial reads and pipelined requests are handled by buffering per connection:
+each fully received request is consumed from the buffer and any leftover bytes
+are carried into the next iteration.
 
 ## Graceful shutdown
 
@@ -76,7 +100,9 @@ empty AND in shutdown mode do workers exit. The main thread joins all
 workers before exiting itself.
 
 This means no in-flight request is dropped and no file descriptor is leaked
-during shutdown.
+during shutdown. A worker sitting inside a live keep-alive connection only
+returns to the queue once that client closes or hits the 5-second idle timeout,
+so shutdown can lag by up to that timeout — but nothing is dropped.
 
 ## Concurrency
 
@@ -131,7 +157,6 @@ sent in the body.
 
 The server is deliberately minimal. Things it does NOT do:
 
-- HTTP/1.1 keep-alive. Every request opens a new TCP connection.
 - Chunked transfer encoding.
 - TLS / HTTPS.
 - Range requests (no resumed downloads).
