@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <time.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include "queue.h"
 
 #define MAX_WORKERS 256
@@ -192,7 +193,7 @@ static int wants_keep_alive(const char *version, const char *headers) {
 // serve one request already sitting in the header 
 // returns 1 if the connection may stay open, 0 otherwise
 static int handle_one_request(int client_fd, const char *headers,
-                              const char *client_ip) {
+                              const char *client_ip, int allow_keep_alive) {
     struct log_entry log = {0};
     strncpy(log.client_ip, client_ip, sizeof(log.client_ip) - 1);
 
@@ -207,7 +208,10 @@ static int handle_one_request(int client_fd, const char *headers,
     snprintf(log.request_line, sizeof(log.request_line),
             "%s %s %s", method, path, version);
 
-    int keep_alive = wants_keep_alive(version, headers);
+    // If this is the last request we will serve on this connection (request cap
+    // reached), advertise Connection: close so the client stops reusing the
+    // socket instead of firing another request into a connection we then drop.
+    int keep_alive = wants_keep_alive(version, headers) && allow_keep_alive;
 
     if (strcmp(method, "GET") != 0) {
         send_error(client_fd, 405, "Method Not Allowed", keep_alive, &log);
@@ -255,15 +259,16 @@ static void handle_client(int client_fd, const char *client_ip) {
         }
 
         *term = '\0'; // terminate the header block for string parsing
-        keep_alive = handle_one_request(client_fd, buf, client_ip);
+        req_count++;
+        int allow_keep_alive = (req_count < MAX_REQUESTS_PER_CONN);
+        keep_alive = handle_one_request(client_fd, buf, client_ip, allow_keep_alive);
 
         // drop the consumed request
         size_t consumed = (size_t)(term + 4 - buf);
         memmove(buf, buf + consumed, buf_len - consumed);
         buf_len -= consumed;
 
-        req_count++;
-        if (!keep_alive || req_count >= MAX_REQUESTS_PER_CONN) return;
+        if (!keep_alive) return;
     }
 }
 
@@ -300,6 +305,13 @@ static void *worker_main(void *arg) {
         // bound each blocking read so a silent client is dropped after the timeout
         struct timeval tv = { KEEPALIVE_TIMEOUT_SECS, 0 };
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        // With keep-alive we write the header and body as separate write()s.
+        // Without this, Nagle's algorithm holds the small body waiting for the
+        // header's ACK while the client sits on its ~40ms delayed-ACK timer,
+        // stalling every response. Disable Nagle so responses flush immediately.
+        int nodelay = 1;
+        setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
         // resolve the client's IP address from the socket
         char client_ip[INET_ADDRSTRLEN];
